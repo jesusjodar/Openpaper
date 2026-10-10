@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcresult
+.env*
+*.p12
+*.mobileprovision
+*.key
+*.resume
+*.openpaper
+LocalVerification/

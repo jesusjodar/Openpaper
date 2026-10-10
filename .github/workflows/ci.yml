@@ -1,0 +1,41 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apple:
+    runs-on: xcode-27
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27
+        run: |
+          if [ -d /Applications/Xcode_27.0.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.0.app
+          fi
+          xcodebuild -version
+          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 27\.'
+      - name: Controlled tests
+        run: swift test --package-path OpenpaperKit --scratch-path "$RUNNER_TEMP/openpaper-tests"
+      - name: macOS build without private signing
+        run: xcodebuild -project Openpaper.xcodeproj -scheme Openpaper-Mac -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/openpaper-mac" CODE_SIGNING_ALLOWED=NO build
+      - name: iPhone and iPad simulator build
+        run: xcodebuild -project Openpaper.xcodeproj -scheme Openpaper-Mobile -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/openpaper-mobile" CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=OPENPAPER0 build
+      - name: iOS device build without private signing
+        run: xcodebuild -project Openpaper.xcodeproj -scheme Openpaper-Mobile -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/openpaper-device" CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned builds
+        run: |
+          ditto -c -k --keepParent "$RUNNER_TEMP/openpaper-mac/Build/Products/Debug/Openpaper.app" "$RUNNER_TEMP/Openpaper-Mac-unsigned.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/openpaper-mobile/Build/Products/Debug-iphonesimulator/Openpaper.app" "$RUNNER_TEMP/Openpaper-iOS-Simulator.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Openpaper-unsigned-builds
+          path: |
+            ${{ runner.temp }}/Openpaper-Mac-unsigned.zip
+            ${{ runner.temp }}/Openpaper-iOS-Simulator.zip
+          retention-days: 14
