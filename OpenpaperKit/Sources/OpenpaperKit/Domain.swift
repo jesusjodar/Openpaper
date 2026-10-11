@@ -75,6 +75,9 @@ public protocol WallpaperProvider: Sendable {
 public enum SearchSorting: String, Codable, CaseIterable, Identifiable, Sendable {
     case dateAdded = "date_added", relevance, random, views, favorites, toplist, hot
     public var id: String { rawValue }
+    var symbol: String {
+        switch self { case .dateAdded: "clock"; case .relevance: "sparkle.magnifyingglass"; case .random: "shuffle"; case .views: "eye"; case .favorites: "heart"; case .toplist: "chart.bar"; case .hot: "flame" }
+    }
     public var title: String {
         switch self {
         case .dateAdded: "Fecha"

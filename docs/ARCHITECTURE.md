@@ -4,15 +4,25 @@
 
 `App/OpenpaperApp.swift` compone las escenas nativas. `OpenpaperKit` contiene el dominio, Wallhaven, persistencia, servicios, vistas e Intents. Los dos destinos comparten código con compilación condicional exclusivamente en los límites de plataforma.
 
-La interfaz usa `NavigationSplitView` en Mac/iPad amplio y `TabView`/`NavigationStack` en iPhone y ventanas compactas. Las barras, menús, formularios, alertas y exportaciones usan componentes SwiftUI del sistema para adoptar Liquid Glass y las preferencias de accesibilidad sin materiales superpuestos.
+La navegación principal usa `TabView` superior nativa en Mac y adaptable en iPad; iPhone mantiene las pestañas inferiores. Cada destino tiene su `NavigationStack`. La ordenación actualiza el feed compartido: pestañas agrupadas en Mac, superiores en iPad amplio y selector segmentado o menú en compacto. Los filtros aplicados permanecen fuera del scroll del masonry; el formulario conserva borrador, Aplicar, Cancelar y Restablecer.
+
+`MasonryColumns` distribuye por la columna más corta a partir de dimensiones originales y conserva el prefijo al paginar. Las columnas `LazyVStack` limitan vistas; la visibilidad de scroll controla cargas y materiales. El ancho se conoce antes de crear la cuadrícula, evitando materializar cientos de tarjetas durante la primera medición. La identidad visible se restaura al cambiar columnas.
 
 ## Estado y concurrencia
 
 `AppSession` contiene los servicios y estado observable común. Dos `SearchFeed` conservan independientemente los resultados de Explorar y Buscar. No hay un modelo de vista por pantalla. UI, SwiftData y aplicación del escritorio viven en MainActor. El cliente y las colas son actores; red, descargas, reducción y recorte trabajan fuera del hilo principal.
 
-La generación de consulta impide que resultados tardíos sustituyan a los actuales. La búsqueda espera 350 ms. Las miniaturas comparten tareas por URL/tamaño; se cancela una petición cuando ya no tiene consumidores. Las colas limitan a cuatro miniaturas y dos originales. El precargado conserva como máximo una página y se desactiva en ahorro de energía o redes caras/restringidas. Se vacía memoria al pasar a segundo plano o recibir presión de memoria en iOS.
+La generación de consulta impide que resultados tardíos sustituyan a los actuales. La búsqueda espera 350 ms. Los archivos fuente comparten tareas por URL, independientemente del tamaño y de la descarga explícita. Cada consumidor registra su cancelación; el último cancela la transferencia. Las colas limitan a cuatro miniaturas y dos originales. La reducción tiene su propia cola de cuatro operaciones. El precargado conserva como máximo una página y se desactiva en ahorro de energía o redes caras/restringidas. Se vacía memoria al pasar a segundo plano o recibir presión de memoria en iOS.
 
-La caché decodificada tiene límites de 64 MiB en móvil y 128 MiB en Mac; la caché en disco, de 512 MiB y 1 GiB. Los originales están fuera de ella. Estos límites necesitan mediciones con Instruments antes de 1.0.
+La caché decodificada tiene límites de 64 MiB en móvil y 128 MiB en Mac; los archivos fuente de visualización en disco, 512 MiB y 1 GiB. Se fijan mientras se reducen o copian para que la poda no los retire en uso. La descarga explícita copia y valida el archivo en Originals sin recomprimir ni sustituir un original existente. Originals y Derived quedan fuera de la caché. Las miniaturas respetan tamaño real × escala y nunca amplían una fuente pequeña. El lienzo de detalle puede escalar para llenar la pantalla usando todos los píxeles disponibles del original.
+
+## Materiales y detalle
+
+SwiftUI `GlassEffectContainer(spacing: 0)` agrupa controles públicos. Un `NSGlassEffectContainerView` adicional es necesario para agrupar los `NSGlassEffectView` de las tarjetas de Mac: el contenedor SwiftUI no agrupa los representables de AppKit. Espaciado cero evita fusionar tarjetas vecinas. Hay una sola imagen bajo cada vidrio `.clear`, con interacción dirigida a la tarjeta y decoraciones separadas.
+
+El puente Objective-C consulta `inputKeys`, protege excepciones KVC y modifica exclusivamente radio y opacidades de blur cuando existe el contrato completo. Conserva los valores anteriores, incluidas claves con valor nulo. El material agrupado solo se ajusta si todos sus efectos AppKit pertenecen a tarjetas propias, son `.clear` y permiten transparencia. La inspección excluye el contenido hospedado y sus controles. Observaciones acotadas de capas, layout, apariencia y activación de ventana agrupan ajustes; desmontar invalida observadores, cancela tareas y restaura valores. Debug y Release usan el mismo comportamiento. Sin contrato o con accesibilidad activa permanece el material nativo.
+
+En móvil, el vidrio público se limita al perímetro y los indicadores. El detalle usa controles públicos circulares y una pill Aplicar/Guardar, con etiquetas y ayuda. La información conserva colecciones, etiquetas, autoría y enlaces identificados. Reutiliza la imagen cargada, reflejada verticalmente con capas de blur enmascaradas; reducción de transparencia o contraste aumentado sustituye esa zona por superficies semánticas.
 
 ## Proveedores y confianza
 

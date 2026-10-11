@@ -51,12 +51,16 @@ struct LibraryView: View {
     private var selectedWallpapers: [Wallpaper] { wallpapers.filter { selection.contains($0.identity.key) } }
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Mostrar", selection: $section) {
-                Text("Favoritos").tag("favorites")
-                Text("Descargas").tag("downloads")
-                Text("Búsquedas guardadas").tag("searches")
-                if let library { ForEach(library.collections) { Text($0.name).tag($0.id.uuidString) } }
-            }.padding()
+            ScrollView(.horizontal) {
+                GlassEffectContainer(spacing: 12) {
+                    HStack(spacing: 8) {
+                        GlassPill(title: "Favoritos", selected: section == "favorites") { section = "favorites" }
+                        GlassPill(title: "Descargas", selected: section == "downloads") { section = "downloads" }
+                        GlassPill(title: "Búsquedas", selected: section == "searches") { section = "searches" }
+                        if let library { ForEach(library.collections) { collection in GlassPill(title: collection.name, selected: section == collection.id.uuidString) { section = collection.id.uuidString } } }
+                    }.padding(.horizontal, 16).padding(.vertical, 8)
+                }
+            }.scrollIndicators(.hidden).fixedSize(horizontal: false, vertical: true)
             if section == "searches" {
                 if let library, !library.searches.isEmpty {
                     List { ForEach(library.searches) { search in
@@ -71,22 +75,13 @@ struct LibraryView: View {
                 ContentUnavailableView("Tu biblioteca empieza aquí", systemImage: "photo.stack", description: Text("Añade favoritos, descarga originales o reúne fondos en una colección. Los metadatos guardados estarán disponibles sin conexión."))
             } else {
                 if selecting {
-                    HStack {
-                        Text("\(selection.count) seleccionados").font(.caption)
-                        Spacer()
-                        Button("Seleccionar todos") { selection = Set(wallpapers.map { $0.identity.key }) }
-                        Menu("Añadir a colección") {
-                            if let library { ForEach(library.collections) { collection in
-                                Button(collection.name) { session.perform { try library.add(selectedWallpapers, to: collection) } }
-                            } }
-                        }.disabled(selection.isEmpty || library?.collections.isEmpty == true)
-                        Button("Descargar", systemImage: "arrow.down") { downloadSelection() }.disabled(selection.isEmpty)
-                        if let collection {
-                            Button("Quitar", systemImage: "minus.circle") { session.perform { try library?.remove(keys: selection, from: collection); selection = [] } }.disabled(selection.isEmpty)
-                        }
+                    ViewThatFits(in: .horizontal) {
+                        selectionActions
+                        ScrollView(.horizontal) { selectionActions }.scrollIndicators(.hidden)
                     }.padding(.horizontal)
+
                 }
-                ScrollView { WallpaperGrid(session: session, wallpapers: wallpapers, selecting: selecting, selection: $selection) }
+                MasonryScroll(session: session, wallpapers: wallpapers, selecting: selecting, selection: $selection)
             }
         }
         .navigationTitle("Biblioteca")
@@ -134,6 +129,22 @@ struct LibraryView: View {
             importFile(url); return true
         }
         .sheet(isPresented: $remote) { RemoteCollectionsView(session: session) }
+    }
+    private var selectionActions: some View {
+        HStack {
+                        Text("\(selection.count) seleccionados").font(.caption)
+                        Spacer()
+                        Button("Seleccionar todos") { selection = Set(wallpapers.map { $0.identity.key }) }
+                        Menu("Añadir a colección") {
+                            if let library { ForEach(library.collections) { collection in
+                                Button(collection.name) { session.perform { try library.add(selectedWallpapers, to: collection) } }
+                            } }
+                        }.disabled(selection.isEmpty || library?.collections.isEmpty == true)
+                        Button("Descargar", systemImage: "arrow.down") { downloadSelection() }.disabled(selection.isEmpty)
+                        if let collection {
+                            Button("Quitar", systemImage: "minus.circle") { session.perform { try library?.remove(keys: selection, from: collection); selection = [] } }.disabled(selection.isEmpty)
+                        }
+                    }.buttonStyle(.glass)
     }
     private func importFile(_ url: URL) {
         Task {
@@ -210,8 +221,31 @@ private struct RemoteCollectionResults: View {
     let username: String
     let collection: RemoteCollection
     @State private var feed = SearchFeed()
+    @State private var filters = false
+    @State private var draft = WallhavenSearchOptions()
+    @State private var error: String?
     var body: some View {
-        SearchResultsView(session: session, feed: feed).navigationTitle(collection.label)
+        VStack(spacing: 0) {
+            FilterBar(options: feed.options, remote: true) { draft = feed.options; filters = true }
+            SearchResultsView(session: session, feed: feed)
+        }.navigationTitle(collection.label)
+            .sheet(isPresented: $filters) {
+                NavigationStack {
+                    Form {
+                        Toggle("SFW", isOn: $draft.sfw)
+                        Toggle("Sketchy", isOn: $draft.sketchy).disabled(!session.policy.sketchy)
+                        Toggle("NSFW", isOn: $draft.nsfw).disabled(!session.policy.nsfw || !session.keyValidated)
+                        if let error { Text(error).foregroundStyle(.red) }
+                    }.navigationTitle("Contenido")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Cancelar") { filters = false } }
+                        ToolbarItem(placement: .confirmationAction) { Button("Aplicar") {
+                            do { try draft.validate(policy: session.policy, hasKey: session.keyValidated); feed.options = draft; filters = false; Task { await feed.refresh(client: session.client) } }
+                            catch { self.error = error.localizedDescription }
+                        } }
+                    }
+                }
+            }
             .task {
                 guard feed.currentPage == 0 else { return }
                 feed.remote = (username, collection.id)

@@ -2,9 +2,9 @@ import Foundation
 
 public actor DownloadService {
     private let root: URL
-    private let permits = PermitPool(limit: 2)
+    private let media: MediaCache
     private var active: [String: (UUID, Task<URL, Error>)] = [:]
-    public init(root: URL) { self.root = root }
+    public init(root: URL, media: MediaCache? = nil) { self.root = root; self.media = media ?? MediaCache(directory: root.appendingPathComponent("PreviewCache")) }
 
     public func download(_ wallpaper: Wallpaper, progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> URL {
         guard wallpaper.provider == "wallhaven", WallhavenSearchOptions.validID(wallpaper.id), MediaURLs.isTrusted(wallpaper.path) else { throw OpenpaperError.invalidResponse }
@@ -12,19 +12,19 @@ public actor DownloadService {
         let destination = root.appendingPathComponent("Originals", isDirectory: true).appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: destination.path) { try ImageProcessing.validateOriginal(destination); return destination }
         if let running = active[wallpaper.identity.key] { return try await running.1.value }
-        let identifier = UUID(), permits = self.permits, root = self.root
+        let identifier = UUID(), media = media, previousResume = root.appendingPathComponent("Resumes/\(wallpaper.id).resume")
         let task = Task.detached(priority: .userInitiated) {
-            try await permits.acquire()
-            do {
+            try await media.withFile(url: wallpaper.path, original: true, previousResume: previousResume, progress: progress) { source in
                 try Task.checkCancellation()
-                let resumes = root.appendingPathComponent("Resumes", isDirectory: true)
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try FileManager.default.createDirectory(at: resumes, withIntermediateDirectories: true)
-                let operation = DownloadOperation(source: wallpaper.path, destination: destination,
-                                                  resumeFile: resumes.appendingPathComponent("\(wallpaper.id).resume"), progress: progress)
-                let result = try await operation.run()
-                await permits.release(); return result
-            } catch { await permits.release(); throw error }
+                let temporary = destination.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".partial")
+                defer { try? FileManager.default.removeItem(at: temporary) }
+                try FileManager.default.copyItem(at: source, to: temporary)
+                try ImageProcessing.validateOriginal(temporary)
+                try Task.checkCancellation()
+                if !FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.moveItem(at: temporary, to: destination) }
+                return destination
+            }
         }
         active[wallpaper.identity.key] = (identifier, task)
         do {
@@ -39,10 +39,11 @@ public actor DownloadService {
     public func cancel(_ identity: WallpaperIdentity) { active[identity.key]?.1.cancel() }
 }
 
-private final class DownloadOperation: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+final class DownloadOperation: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let source: URL
     private let destination: URL
     private let resumeFile: URL
+    private let maxBytes: Int
     private let progress: @Sendable (Double) -> Void
     private let lock = NSLock()
     private var continuation: CheckedContinuation<URL, Error>?
@@ -52,8 +53,8 @@ private final class DownloadOperation: NSObject, URLSessionDownloadDelegate, @un
     private var cancelled = false
     private var lastProgress = ContinuousClock.now
 
-    init(source: URL, destination: URL, resumeFile: URL, progress: @escaping @Sendable (Double) -> Void) {
-        self.source = source; self.destination = destination; self.resumeFile = resumeFile; self.progress = progress
+    init(source: URL, destination: URL, resumeFile: URL, maxBytes: Int = 300_000_000, progress: @escaping @Sendable (Double) -> Void) {
+        self.source = source; self.destination = destination; self.resumeFile = resumeFile; self.maxBytes = maxBytes; self.progress = progress
     }
     func run() async throws -> URL {
         try await withTaskCancellationHandler {
@@ -77,8 +78,8 @@ private final class DownloadOperation: NSObject, URLSessionDownloadDelegate, @un
     }
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        if totalBytesWritten > 300_000_000 || totalBytesExpectedToWrite > 300_000_000 {
-            lock.withLock { result = .failure(OpenpaperError.storage("El original supera el límite de 300 MB.")) }
+        if totalBytesWritten > maxBytes || totalBytesExpectedToWrite > maxBytes {
+            lock.withLock { result = .failure(OpenpaperError.storage("La imagen supera el límite de \(maxBytes / 1_000_000) MB.")) }
             downloadTask.cancel(); return
         }
         let now = ContinuousClock.now
@@ -89,6 +90,9 @@ private final class DownloadOperation: NSObject, URLSessionDownloadDelegate, @un
     }
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         do {
+            guard !lock.withLock({ cancelled }) else { throw CancellationError() }
+            let size = try location.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size <= maxBytes else { throw OpenpaperError.storage("La imagen supera el límite permitido.") }
             guard let response = downloadTask.response as? HTTPURLResponse else { throw OpenpaperError.invalidResponse }
             guard (200..<300).contains(response.statusCode) else { throw OpenpaperError.http(response.statusCode) }
             try ImageProcessing.validateOriginal(location)

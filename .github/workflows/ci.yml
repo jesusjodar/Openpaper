@@ -24,6 +24,8 @@ jobs:
         run: swift test --package-path OpenpaperKit --scratch-path "$RUNNER_TEMP/openpaper-tests"
       - name: macOS build without private signing
         run: xcodebuild -project Openpaper.xcodeproj -scheme Openpaper-Mac -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/openpaper-mac" CODE_SIGNING_ALLOWED=NO build
+      - name: macOS Release build including glass bridge
+        run: xcodebuild -project Openpaper.xcodeproj -scheme Openpaper-Mac -configuration Release -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/openpaper-mac-release" CODE_SIGNING_ALLOWED=NO build
       - name: iPhone and iPad simulator build
         run: xcodebuild -project Openpaper.xcodeproj -scheme Openpaper-Mobile -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/openpaper-mobile" CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=OPENPAPER0 build
       - name: iOS device build without private signing
@@ -32,10 +34,12 @@ jobs:
         run: |
           ditto -c -k --keepParent "$RUNNER_TEMP/openpaper-mac/Build/Products/Debug/Openpaper.app" "$RUNNER_TEMP/Openpaper-Mac-unsigned.zip"
           ditto -c -k --keepParent "$RUNNER_TEMP/openpaper-mobile/Build/Products/Debug-iphonesimulator/Openpaper.app" "$RUNNER_TEMP/Openpaper-iOS-Simulator.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/openpaper-mac-release/Build/Products/Release/Openpaper.app" "$RUNNER_TEMP/Openpaper-Mac-Release-unsigned.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: Openpaper-unsigned-builds
           path: |
             ${{ runner.temp }}/Openpaper-Mac-unsigned.zip
             ${{ runner.temp }}/Openpaper-iOS-Simulator.zip
+            ${{ runner.temp }}/Openpaper-Mac-Release-unsigned.zip
           retention-days: 14

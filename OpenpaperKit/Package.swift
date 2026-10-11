@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS("27.0"), .iOS("27.0")],
     products: [.library(name: "OpenpaperKit", targets: ["OpenpaperKit"])],
     targets: [
-        .target(name: "OpenpaperKit"),
-        .testTarget(name: "OpenpaperKitTests", dependencies: ["OpenpaperKit"])
+        .target(name: "GlassBridge", publicHeadersPath: "include"),
+        .target(name: "OpenpaperKit", dependencies: [.target(name: "GlassBridge", condition: .when(platforms: [.macOS]))]),
+        .testTarget(name: "OpenpaperKitTests", dependencies: ["OpenpaperKit", .target(name: "GlassBridge", condition: .when(platforms: [.macOS]))])
     ]
 )

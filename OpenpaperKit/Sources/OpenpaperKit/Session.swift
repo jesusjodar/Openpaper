@@ -146,9 +146,11 @@ struct AppPreferences: Codable {
         preferences = defaults.data(forKey: "preferences-v1").flatMap { try? JSONDecoder().decode(AppPreferences.self, from: $0) } ?? .init()
         do {
             let store = try LibraryStore(); library = store
-            downloads = DownloadService(root: store.root)
             let caches = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            images = ImagePipeline(directory: caches.appendingPathComponent("Openpaper/Thumbnails", isDirectory: true))
+            let directory = caches.appendingPathComponent("Openpaper/Sources", isDirectory: true)
+            let media = MediaCache(directory: directory)
+            downloads = DownloadService(root: store.root, media: media)
+            images = ImagePipeline(directory: directory, media: media)
         } catch { startupError = error.localizedDescription }
         explore.options = preferences.defaultOptions; search.options = preferences.defaultOptions
         monitor.pathUpdateHandler = { [weak self] path in
@@ -159,6 +161,7 @@ struct AppPreferences: Codable {
     }
     public var policy: ContentPolicy { .init(sketchy: preferences.policy.sketchy, nsfw: preferences.policy.nsfw && keyValidated) }
     public var allowPrefetch: Bool { !constrainedNetwork && !ProcessInfo.processInfo.isLowPowerModeEnabled }
+    public var allowOriginalPreviews: Bool { !constrainedNetwork && !ProcessInfo.processInfo.isLowPowerModeEnabled }
     public var history: [String] { preferences.history }
     public var rotationEnabled: Bool { preferences.rotationEnabled }
     public var rotationPaused: Bool { preferences.rotationPaused }

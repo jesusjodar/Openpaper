@@ -5,6 +5,9 @@ struct DetailView: View {
     @Bindable var session: AppSession
     @State var wallpaper: Wallpaper
     @Environment(\.dismiss) private var dismiss
+    @State private var heroImage: RenderedImage?
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var detailError: String?
     @State private var detailLoaded = false
     @State private var remote = false
@@ -20,6 +23,8 @@ struct DetailView: View {
     @State private var fill = true
     @State private var photosInstructions = false
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @ScaledMetric(relativeTo: .largeTitle) private var compactTitleSize: CGFloat = 42
+    @ScaledMetric(relativeTo: .largeTitle) private var regularTitleSize: CGFloat = 64
     private var file: URL? { derived ?? session.library?.localURL(wallpaper) }
     private var favorite: Bool { session.library?.item(wallpaper)?.favorite == true }
     var body: some View {
@@ -27,60 +32,27 @@ struct DetailView: View {
         else { ContentUnavailableView("Contenido desactivado", systemImage: "eye.slash", description: Text("Este fondo ya no cumple el contenido permitido en Ajustes.")) }
     }
     private var detailContent: some View {
+        GeometryReader { viewport in
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Thumbnail(pipeline: session.images, url: file ?? wallpaper.thumbnail, pixels: 4096, fit: true)
-                    .frame(maxWidth: .infinity).frame(height: sizeClass == .compact && derived == nil && wallpaper.width > wallpaper.height ? 230 : 360)
-                    .scaleEffect(zoom).clipped()
-                    .gesture(MagnifyGesture().onChanged { zoom = min(5, max(1, zoomStart * $0.magnification)) }.onEnded { _ in zoomStart = zoom })
-                    .accessibilityLabel("Vista previa del fondo \(wallpaper.id)")
-                    .accessibilityAction(named: "Ampliar") { zoom = min(5, zoom + 1) }
-                    .accessibilityAction(named: "Restablecer zoom") { zoom = 1; zoomStart = 1 }
-                if file == nil { Text("Vista previa. Descarga el original para verlo con mayor detalle.").font(.caption).foregroundStyle(.secondary) }
-                if derived != nil { Label("Usando una copia encuadrada. El original se conserva.", systemImage: "crop").font(.caption) }
-                HStack {
-                    Button(favorite ? "Quitar favorito" : "Favorito", systemImage: favorite ? "heart.fill" : "heart") { session.perform { try session.library?.toggleFavorite(wallpaper) } }
-                    if session.library?.localURL(wallpaper) == nil {
-                        Button("Descargar original", systemImage: "arrow.down.circle") { download() }.disabled(session.jobs[wallpaper.identity.key] != nil)
-                    } else { Label("Descargado", systemImage: "checkmark.circle").foregroundStyle(.secondary) }
-                    Spacer(minLength: 0)
-                }.buttonStyle(.bordered)
-                if let progress = session.jobs[wallpaper.identity.key] {
-                    HStack { ProgressView(value: progress).accessibilityLabel("Descargando original"); Text(progress, format: .percent.precision(.fractionLength(0))).monospacedDigit(); Button("Cancelar") { session.cancelDownload(wallpaper) } }
-                }
-                if let error = session.downloadErrors[wallpaper.identity.key] { HStack { Text(error).foregroundStyle(.red); Button("Reintentar") { download() } } }
-                if let detailError { HStack { Text(detailError).foregroundStyle(.secondary); Button("Reintentar detalle") { Task { await loadDetail() } } } }
-                GroupBox("Usar el fondo") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        #if os(macOS)
+            VStack(alignment: .leading, spacing: 0) {
+                hero(size: viewport.size)
+                VStack(alignment: .leading, spacing: 20) {
+                    if derived != nil { Label("Usando una copia encuadrada. El original se conserva.", systemImage: "crop").font(.caption) }
+                    if let progress = session.jobs[wallpaper.identity.key] {
+                        HStack { ProgressView(value: progress).accessibilityLabel("Descargando original"); Text(progress, format: .percent.precision(.fractionLength(0))).monospacedDigit(); GlassIconButton(title: "Cancelar descarga", symbol: "xmark") { session.cancelDownload(wallpaper) } }
+                    }
+                    if let error = session.downloadErrors[wallpaper.identity.key] { HStack { Text(error); GlassIconButton(title: "Reintentar descarga", symbol: "arrow.clockwise") { download() } } }
+                    if let detailError { HStack { Text(detailError); GlassIconButton(title: "Reintentar detalle", symbol: "arrow.clockwise") { Task { await loadDetail() } } } }
+                    #if os(macOS)
+                    HStack {
                         Picker("Monitor", selection: $target) {
                             Text("Todos los conectados").tag("")
                             ForEach(session.application.screens) { Text("\($0.name) · \($0.width) × \($0.height)").tag($0.id) }
                         }
                         Picker("Ajuste", selection: $fill) { Text("Rellenar").tag(true); Text("Ajustar").tag(false) }
-                        Button("Aplicar en Mac", systemImage: "desktopcomputer") { performFileAction { url in
-                            try session.application.apply(file: url, target: target.isEmpty ? nil : target, fill: fill)
-                            session.notice = "Fondo aplicado al monitor elegido. macOS gestiona los Spaces."
-                        } }.disabled(working)
-                        Button("Volver al fondo anterior", systemImage: "arrow.uturn.backward") { session.perform { try session.application.restorePrevious() } }
-                        #else
-                        Button("Guardar en Fotos", systemImage: "photo.badge.arrow.down") { performFileAction { url in
-                            try await PhotosService.save(url); photosInstructions = true
-                        } }.disabled(working)
-                        Button("Cómo usarlo como fondo", systemImage: "info.circle") { photosInstructions = true }
-                        #endif
-                        Button("Encuadrar una copia", systemImage: "crop") { performFileAction { _ in crop = true } }.disabled(working)
-                        Button("Exportar imagen", systemImage: "square.and.arrow.up") {
-                            performFileAction { url in
-                                document = try await Task.detached { try ImageDocument(file: url) }.value
-                                exportingType = document?.type ?? .jpeg; exporter = true
-                            }
-                        }.disabled(working)
-                        if let file { ShareLink(item: file) { Label("Compartir imagen", systemImage: "square.and.arrow.up") } }
-                        ShareLink(item: wallpaper.url) { Label("Compartir enlace", systemImage: "link") }
-                        if working { ProgressView("Preparando imagen…") }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
-                }
+                    }
+                    #endif
+                    if working { ProgressView("Preparando imagen…") }
                 if let library = session.library {
                     GroupBox("Colecciones locales") {
                         if library.collections.isEmpty { Text("Crea una colección en Biblioteca.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
@@ -99,7 +71,7 @@ struct DetailView: View {
                     }
                 }
                 GroupBox("Información") {
-                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                    VStack(alignment: .leading, spacing: 8) {
                         info("Resolución", wallpaper.resolution)
                         info("Formato", wallpaper.fileType)
                         info("Tamaño", ByteCountFormatter.string(fromByteCount: Int64(wallpaper.fileSize), countStyle: .file))
@@ -112,7 +84,7 @@ struct DetailView: View {
                 if !wallpaper.tags.isEmpty {
                     GroupBox("Etiquetas") {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 120))], alignment: .leading) {
-                            ForEach(wallpaper.tags) { tag in Button(tag.name) { session.searchFor("id:\(tag.id)"); dismiss() }.buttonStyle(.bordered) }
+                            ForEach(wallpaper.tags) { tag in Button(tag.name) { session.searchFor("id:\(tag.id)"); dismiss() }.buttonStyle(.glass).buttonBorderShape(.capsule) }
                         }.padding(4)
                     }
                 }
@@ -133,10 +105,24 @@ struct DetailView: View {
                 if let source = wallpaper.source, let url = URL(string: source), ["http", "https"].contains(url.scheme ?? "") { Link("Procedencia original ↗", destination: url) }
                 Link("Abrir en Wallhaven ↗", destination: wallpaper.url)
                 Text("Los favoritos y las colecciones de Wallhaven se modifican en su web. Cada imagen conserva los derechos de su autor.").font(.caption).foregroundStyle(.secondary)
-            }.padding().frame(maxWidth: 1000)
-                .frame(maxWidth: .infinity)
+                }
+                .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                .background { ReflectedInformationBackground(image: heroImage) }
+                .groupBoxStyle(InformationBoxStyle())
+                .foregroundStyle(reduceTransparency || contrast == .increased ? Color.primary : Color.white)
+            }.frame(maxWidth: .infinity)
         }
-        .navigationTitle("Fondo \(wallpaper.id)")
+        }
+        .ignoresSafeArea(.container, edges: .top)
+        #if os(iOS)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
+        #else
+        .navigationTitle("Fondo · \(wallpaper.id)")
+        #endif
         .task { if !detailLoaded { await loadDetail() } }
         .sheet(isPresented: $remote) { RemoteCollectionsView(session: session, username: wallpaper.uploader ?? "") }
         .sheet(isPresented: $crop) {
@@ -150,7 +136,99 @@ struct DetailView: View {
             Button("Entendido", role: .cancel) {}
         } message: { Text("1. Abre Fotos y selecciona la imagen guardada.\n2. Pulsa Compartir.\n3. Elige Usar como fondo de pantalla.\n\nTambién puedes usar las acciones de Openpaper en Atajos y conectar la imagen con la acción del sistema para establecer el fondo.") }
     }
-    @ViewBuilder private func info(_ title: String, _ value: String) -> some View { GridRow { Text(title).foregroundStyle(.secondary); Text(value) } }
+    private func hero(size: CGSize) -> some View {
+        let titleSize = sizeClass == .compact ? compactTitleSize : regularTitleSize
+        let height = max(size.height, titleSize * 2 + 260)
+        return ZStack {
+            Color.black
+            WallpaperImage(session: session, wallpaper: wallpaper, file: file, requestOriginal: true, fill: wallpaper.displayAspect >= 1 && derived == nil, zoom: zoom) { heroImage = $0 }
+            .frame(width: size.width, height: height)
+            .scaleEffect(zoom).clipped()
+            .gesture(MagnifyGesture().onChanged { zoom = min(5, max(1, zoomStart * $0.magnification)) }.onEnded { _ in zoomStart = zoom })
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Vista previa del fondo \(wallpaper.id), \(wallpaper.resolution)")
+            .accessibilityAddTraits(.isImage)
+            .accessibilityAction(named: "Ampliar") { zoom = min(5, zoom + 1) }
+            .accessibilityAction(named: "Restablecer zoom") { zoom = 1; zoomStart = 1 }
+            VStack(spacing: 22) {
+                    Text("Fondo · \(wallpaper.id)")
+                        .font(.system(size: titleSize, weight: .heavy))
+                        .multilineTextAlignment(.center).accessibilityAddTraits(.isHeader)
+                    Text([wallpaper.resolution, wallpaper.extensionName.uppercased(), wallpaper.uploader].compactMap { $0 }.joined(separator: " · "))
+                        .font(.subheadline.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    actions
+                    if working { ProgressView("Preparando imagen…").tint(.white) }
+                    if let progress = session.jobs[wallpaper.identity.key] { Text(progress, format: .percent.precision(.fractionLength(0))).monospacedDigit().accessibilityLabel("Descargando original") }
+            }
+            .multilineTextAlignment(.center).foregroundStyle(.white)
+            .padding(24).frame(maxWidth: 920)
+            .background { RadialGradient(colors: [.black.opacity(0.5), .black.opacity(0.12), .clear], center: .center, startRadius: 30, endRadius: max(240, size.width / 2)) }
+            .shadow(color: .black.opacity(0.7), radius: 4, y: 2)
+        }.frame(width: size.width, height: max(1, height)).clipped()
+    }
+    private var actions: some View {
+        GlassEffectContainer(spacing: 0) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) { favoriteButton; editButton; applyButton; downloadButton; secondaryActions }
+                VStack(spacing: 16) {
+                    applyButton
+                    HStack(spacing: 12) { favoriteButton; editButton; downloadButton; secondaryActions }
+                }
+            }
+        }
+    }
+    private var applyButton: some View {
+            #if os(macOS)
+            return Button {
+                performFileAction { url in
+                    try session.application.apply(file: url, target: target.isEmpty ? nil : target, fill: fill)
+                    session.notice = "Fondo aplicado al monitor elegido. macOS gestiona los Spaces."
+                }
+            } label: { Label("Aplicar fondo", systemImage: "desktopcomputer").font(.headline).padding(.horizontal, 22).frame(minHeight: 44) }
+            .buttonStyle(.glass).buttonBorderShape(.capsule).disabled(working).help("Aplicar al monitor elegido")
+            #else
+            return Button {
+                performFileAction { url in try await PhotosService.save(url); photosInstructions = true }
+            } label: { Label("Guardar en Fotos", systemImage: "photo.badge.arrow.down").font(.headline).padding(.horizontal, 22).frame(minHeight: 44) }
+            .buttonStyle(.glass).buttonBorderShape(.capsule).disabled(working)
+            #endif
+    }
+    private var favoriteButton: some View {
+            GlassIconButton(title: favorite ? "Quitar favorito" : "Añadir favorito", symbol: favorite ? "heart.fill" : "heart") { session.perform { try session.library?.toggleFavorite(wallpaper) } }.tint(favorite ? .red : nil)
+    }
+    private var editButton: some View {
+            GlassIconButton(title: "Encuadrar una copia", symbol: "crop") { performFileAction { _ in crop = true } }.disabled(working)
+    }
+    @ViewBuilder private var downloadButton: some View {
+            if session.jobs[wallpaper.identity.key] != nil {
+                GlassIconButton(title: "Cancelar descarga", symbol: "xmark") { session.cancelDownload(wallpaper) }
+            } else {
+                GlassIconButton(title: session.library?.localURL(wallpaper) != nil ? "Original descargado" : "Descargar original", symbol: session.library?.localURL(wallpaper) != nil ? "checkmark" : "arrow.down") { download() }
+                    .disabled(session.library?.localURL(wallpaper) != nil)
+            }
+    }
+    private var secondaryActions: some View {
+        Menu {
+            Button("Exportar imagen", systemImage: "square.and.arrow.up") {
+                performFileAction { url in
+                    document = try await Task.detached { try ImageDocument(file: url) }.value
+                    exportingType = document?.type ?? .jpeg; exporter = true
+                }
+            }.disabled(working)
+            if let file { ShareLink("Compartir imagen", item: file) }
+            ShareLink("Compartir enlace", item: wallpaper.url)
+            #if os(macOS)
+            Button("Volver al fondo anterior", systemImage: "arrow.uturn.backward") { session.perform { try session.application.restorePrevious() } }
+            #else
+            Button("Cómo usarlo como fondo", systemImage: "info") { photosInstructions = true }
+            #endif
+        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+        .buttonStyle(.glass).buttonBorderShape(.circle)
+        .menuIndicator(.hidden).fixedSize()
+        .help("Más acciones").accessibilityLabel("Más acciones")
+    }
+    private func info(_ title: String, _ value: String) -> some View { LabeledContent(title) { Text(value).fixedSize(horizontal: false, vertical: true) } }
     private func loadDetail() async {
         do { let loaded = try await session.client.detail(id: wallpaper.id); try Task.checkCancellation(); wallpaper = loaded; detailLoaded = true; detailError = nil }
         catch { if !Task.isCancelled { detailError = error.localizedDescription } }
@@ -290,5 +368,41 @@ private struct CropView: View {
                 use(file); dismiss()
             } catch { self.error = error.localizedDescription; saving = false }
         }
+    }
+}
+
+private struct InformationBoxStyle: GroupBoxStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            configuration.label.font(.headline)
+            configuration.content
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+    }
+}
+
+private struct ReflectedInformationBackground: View {
+    var image: RenderedImage?
+    @Environment(\.accessibilityReduceTransparency) private var reduced
+    @Environment(\.colorSchemeContrast) private var contrast
+    var body: some View {
+        GeometryReader { geometry in
+            if reduced || contrast == .increased || image == nil {
+                Rectangle().fill(.background)
+            } else if let image {
+                ZStack {
+                    ForEach(0..<3) { band in
+                        Image(decorative: image.cgImage, scale: 1).resizable().scaledToFill()
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .scaleEffect(x: 1, y: -1).blur(radius: CGFloat(12 + band * 20))
+                            .mask {
+                                if band == 0 { LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .bottom) }
+                                else if band == 1 { LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .white, location: 0.5), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom) }
+                                else { LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom) }
+                            }
+                    }
+                    Rectangle().fill(.black.opacity(0.65))
+                }.clipped()
+            }
+        }.allowsHitTesting(false).accessibilityHidden(true)
     }
 }

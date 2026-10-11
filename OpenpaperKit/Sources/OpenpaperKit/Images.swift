@@ -15,55 +15,41 @@ public actor ImagePipeline {
     private var access: [String] = []
     private var cost = 0
     private let memoryLimit: Int
-    private let diskLimit: Int
-    private let directory: URL
+    private let media: MediaCache
     private let permits = PermitPool(limit: 4)
-    private let session: URLSession
 
-    public init(directory: URL) {
-        self.directory = directory
+    public init(directory: URL, media: MediaCache? = nil) {
+        self.media = media ?? MediaCache(directory: directory)
         #if os(macOS)
-        memoryLimit = 128 * 1024 * 1024; diskLimit = 1024 * 1024 * 1024
+        memoryLimit = 128 * 1024 * 1024
         #else
-        memoryLimit = 64 * 1024 * 1024; diskLimit = 512 * 1024 * 1024
+        memoryLimit = 64 * 1024 * 1024
         #endif
-        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 30
-        session = URLSession(configuration: config)
     }
 
-    public func image(url: URL, maxPixel: Int = 720) async throws -> RenderedImage {
+    public func image(url: URL, maxPixel: Int, original: Bool = false) async throws -> RenderedImage {
         guard url.isFileURL || MediaURLs.isTrusted(url) else { throw OpenpaperError.invalidResponse }
-        let pixels = min(4096, max(64, maxPixel))
+        let pixels = max(1, min(50_000, maxPixel))
         let key = SHA256.hash(data: Data("\(url.absoluteString)|\(pixels)".utf8)).map { String(format: "%02x", $0) }.joined()
         if let image = cache[key] { touch(key); return image }
         let user = UUID()
         let task: Task<RenderedImage, Error>
         if var flight = flights[key] { flight.users.insert(user); flights[key] = flight; task = flight.task }
         else {
-            let permits = self.permits, session = self.session, directory = self.directory, limit = self.diskLimit
+            let permits = self.permits, media = self.media
             task = Task.detached(priority: .userInitiated) {
-                try await permits.acquire()
-                do {
-                    try Task.checkCancellation()
-                    let image: RenderedImage
-                    if url.isFileURL { image = try ImageProcessing.thumbnail(url: url, pixels: pixels) }
-                    else {
-                        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                        let cached = directory.appendingPathComponent(key)
-                        if FileManager.default.fileExists(atPath: cached.path), let decoded = try? ImageProcessing.thumbnail(url: cached, pixels: pixels) { image = decoded }
-                        else {
-                            let (data, response) = try await session.data(from: url)
-                            try Task.checkCancellation()
-                            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode), data.count <= 20_000_000 else { throw OpenpaperError.invalidResponse }
-                            image = try ImageProcessing.thumbnail(data: data, pixels: pixels)
-                            try data.write(to: cached, options: .atomic)
-                            try Self.pruneDisk(directory: directory, limit: limit)
-                        }
-                        try? FileManager.default.setAttributes([.modificationDate: Date.now], ofItemAtPath: cached.path)
-                    }
-                    await permits.release(); return image
-                } catch { await permits.release(); throw error }
+                let render: @Sendable (URL) async throws -> RenderedImage = { file in
+                    try await permits.acquire()
+                    do {
+                        try Task.checkCancellation()
+                        let image = try ImageProcessing.thumbnail(url: file, pixels: pixels)
+                        await permits.release(); return image
+                    } catch { await permits.release(); throw error }
+                }
+                if url.isFileURL { return try await render(url) }
+                return try await media.withFile(url: url, original: original, use: render)
             }
+
             flights[key] = Flight(task: task, users: [user])
         }
         return try await withTaskCancellationHandler {
@@ -93,21 +79,12 @@ public actor ImagePipeline {
         }
     }
     public func clearMemory() { cache.removeAll(); access.removeAll(); cost = 0 }
-    public func clearDisk() throws {
-        // Cancel active writes before removing only thumbnail cache files.
+    public func clearDisk() async throws {
         for flight in flights.values { flight.task.cancel() }
         flights.removeAll(); clearMemory()
-        if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+        try await media.clear()
     }
-    private static func pruneDisk(directory: URL, limit: Int) throws {
-        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
-        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys)).compactMap { url -> (URL, Int, Date)? in
-            guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { return nil }
-            return (url, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast)
-        }.sorted { $0.2 < $1.2 }
-        var total = files.reduce(0) { $0 + $1.1 }
-        for (url, size, _) in files where total > limit { try FileManager.default.removeItem(at: url); total -= size }
-    }
+
 }
 
 public enum ImageProcessing {
@@ -120,7 +97,11 @@ public enum ImageProcessing {
         return try thumbnail(source: source, pixels: pixels)
     }
     private static func thumbnail(source: CGImageSource, pixels: Int) throws -> RenderedImage {
-        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: pixels, kCGImageSourceShouldCacheImmediately: true]
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? pixels
+        let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? pixels
+        let target = min(max(width, height), max(1, pixels))
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: target, kCGImageSourceShouldCacheImmediately: true]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw OpenpaperError.invalidResponse }
         return RenderedImage(cgImage: image)
     }

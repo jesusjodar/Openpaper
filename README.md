@@ -29,6 +29,14 @@ El inicio es SFW. Sketchy se habilita explícitamente. NSFW requiere clave valid
 
 Las colecciones remotas se presentan separadas de las locales: Biblioteca → Colecciones de Wallhaven. Introduce el usuario propietario; activa Mis colecciones para incluir tus colecciones privadas con la clave. Solo se envía el filtro admitido de contenido y la página. Para escribir favoritos o colecciones remotas, abre Wallhaven.
 
+## Diseño y carga
+
+Explorar, Buscar, Biblioteca y colecciones comparten una cuadrícula masonry con columnas perezosas, proporciones originales y esquinas continuas. Solo las tarjetas visibles cargan imágenes y mantienen materiales. Se presenta primero una miniatura y después una reducción del original calculada para el tamaño Retina; en modo de datos reducidos permanece la miniatura. Abrir el detalle solicita el original de visualización. Esta caché no marca el fondo como descargado y comparte la transferencia con Descargar.
+
+El detalle toma como referencia la composición de WaifuX: fondo a pantalla completa, título blanco centrado, acciones circulares y Aplicar/Guardar en una pill. Los paisajes rellenan el lienzo sin deformación; los retratos se ajustan completos. El zoom permite explorar la imagen. Debajo, una prolongación reflejada usa desenfoque público progresivo.
+
+SwiftUI `GlassEffectContainer(spacing: 0)` agrupa los controles. En Mac, `NSGlassEffectContainerView` agrupa los vidrios de tarjeta representados desde AppKit. No son intercambiables. El ajuste privado de Mac está activo en Debug y Release: comprueba el contrato de cada filtro y solo pone a cero `inputBlurRadius` e `inputBlurOpacity*`. Si no están disponibles, falla el acceso o se activa Reducir transparencia, conserva el material del sistema. Una actualización de macOS puede cambiar el resultado. iPhone/iPad utilizan únicamente vidrio público en el perímetro y los indicadores.
+
 ## Descargar y aplicar
 
 Se conserva el original, sin recomprimir. El detalle muestra progreso, cancelación y reintento. Una cancelación conserva los datos de reanudación que proporcione URLSession; si el servidor no permite reanudar, el siguiente intento comienza desde cero. La identidad del proveedor evita originales duplicados.
@@ -42,10 +50,10 @@ Se conserva el original, sin recomprimir. El detalle muestra progreso, cancelaci
 ## Datos y privacidad
 
 - SwiftData local guarda metadatos, favoritos, colecciones y búsquedas.
-- Application Support contiene originales, copias derivadas y datos de reanudación; las miniaturas viven en Caches.
+- Application Support conserva originales descargados y copias derivadas. Caches separa archivos fuente de visualización, reducciones y reanudaciones; admite las reanudaciones anteriores sin modificar su formato.
 - La clave API se guarda en Keychain y se envía por `X-API-Key`, nunca en la URL.
 - La transferencia versionada excluye credenciales, rutas de archivos locales e imágenes. La importación valida primero y combina por identidad en una transacción sin reemplazar datos existentes.
-- La limpieza de caché afecta exclusivamente a miniaturas. No se eliminan originales ni copias que puedan usarse en el escritorio.
+- La limpieza de caché afecta a fuentes de visualización y reducciones. No se eliminan originales ni copias que puedan usarse en el escritorio.
 - No hay analítica, servicios propios ni sincronización iCloud. Las peticiones van directamente a Wallhaven y su CDN.
 
 ## Automatización en Mac
@@ -56,7 +64,7 @@ Elige una colección local o una búsqueda guardada y un intervalo de 15 minutos
 
 Esta entrega usa la versión **0.1.0** hasta completar todos los criterios de 1.0. El estado comprobado, las limitaciones y las pruebas pendientes están en [VERIFICATION.md](docs/VERIFICATION.md). Compilar no demuestra el funcionamiento de Fotos y Atajos en dispositivos físicos ni sustituye las mediciones con Instruments.
 
-GitHub Actions compila los dos destinos con Xcode 27, ejecuta pruebas con datos controlados y conserva artefactos sin firma privada. La prueba de contrato real es manual: `python3 scripts/check-wallhaven.py`. El CI habitual no depende de Wallhaven.
+GitHub Actions compila Mac en Debug y Release y los dos destinos con Xcode 27, ejecuta pruebas con datos controlados y conserva artefactos sin firma privada. La prueba de contrato real es manual: `python3 scripts/check-wallhaven.py`. El CI habitual no depende de Wallhaven.
 
 ## Licencia y fuentes
 
